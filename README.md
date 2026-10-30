@@ -210,7 +210,7 @@ La idea es sencilla: descargamos nosotros el servidor correcto desde los servido
    ```bash
    cd ~/.devin-server/bin/$C && rm -f vscode-server.tar.gz
    curl -fL -o vscode-server.tar.gz "$URL"
-   echo "$SHA  vscode-server.tar.gz" | sha256sum -c - && tar -xzf vscode-server.tar.gz --strip-components 1 && ls -la bin/devin-server
+   echo "$SHA  vscode-server.tar.gz" | sha256sum -c - && tar -xzf vscode-server.tar.gz --strip-components 1 && ls -la bin/devin-server && rm -f vscode-server.tar.gz
    cd ~
    ```
 
