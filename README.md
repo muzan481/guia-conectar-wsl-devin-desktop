@@ -147,6 +147,83 @@ wsl -d Ubuntu -- bash -lc "ls ~/.devin-server/bin/ ; ps -eo pid,cmd | grep devin
 
 ---
 
+## Paso 7: Si el error vuelve justo después de que Devin Desktop se actualice
+
+Esto me pasó a mí: todo funcionaba, Devin Desktop se actualizó solo, lo volví a abrir y salió **otra vez** el mismo error (`Couldn't install vscode server ... non-zero exit status`). Los pasos 0 a 4 no lo arreglaron. Aquí va cómo saber si es este caso y cómo arreglarlo.
+
+### 7.1 ¿Por qué pasa?
+
+Cada versión de Devin Desktop necesita **su propio servidor** dentro de Ubuntu. Cuando se actualiza, intenta descargar el servidor nuevo en `~/.devin-server/bin/<código-de-versión>/`.
+
+El problema es que, en algunas versiones, Devin Desktop **no le dice a la extensión de WSL desde dónde descargarlo** (en su archivo `product.json` falta el dato `serverDownloadUrlTemplate`). Entonces la extensión usa una dirección de reserva que es de **VSCodium** (otro editor), donde obviamente no existe el servidor de Devin. Resultado: la descarga da error 404 y queda un archivo **vacío** de 0 bytes. Por eso falla siempre, aunque tu internet funcione perfecto.
+
+### 7.2 Comprobar si es tu caso
+
+Abre una terminal de **Ubuntu** y escribe:
+
+```bash
+ls -la ~/.devin-server/bin/*/
+```
+
+Es este caso si ves algo así: una carpeta con un nombre largo y dentro **solo** un archivo `vscode-server.tar.gz` de tamaño **0**:
+
+```
+-rw-r--r-- 1 alvaro alvaro    0 Oct 30 05:06 vscode-server.tar.gz
+```
+
+Si quieres confirmarlo del todo, mira qué dirección usa la extensión de WSL (cambia `TU_USUARIO` por tu usuario de Windows):
+
+```bash
+grep -ohE 'https://[^"'"'"' `]*reh[^"'"'"' `]*' /mnt/c/Users/TU_USUARIO/.devin/extensions/jeanp413.open-remote-wsl-*/out/extension.js | sort -u
+```
+
+Si sale una dirección de `github.com/VSCodium/...`, es exactamente este problema.
+
+### 7.3 Arreglarlo: instalar el servidor a mano
+
+La idea es sencilla: descargamos nosotros el servidor correcto desde los servidores de Devin y lo dejamos en la carpeta donde la extensión lo busca. Cuando lo encuentra ya instalado, no intenta descargarlo y conecta.
+
+1. **Cierra Devin Desktop.**
+
+2. **Actualiza Devin Desktop a la última versión** si no lo está (el arreglo descarga el servidor de la versión más nueva, así que tu editor tiene que ser esa misma versión).
+
+3. Abre una terminal de **Ubuntu** y pega todo este bloque:
+
+   ```bash
+   # 1) Código de versión que tu editor intentó instalar (la carpeta que quedó a medias)
+   C=$(ls -t ~/.devin-server/bin | head -1); echo "Tu editor: $C"
+
+   # 2) Preguntar a Devin cuál es el servidor más nuevo y dónde está
+   INFO=$(curl -fsSL https://windsurf-stable.codeium.com/api/update/linux-reh-x64/stable/latest)
+   URL=$(echo "$INFO" | grep -oE '"url":"[^"]*"' | cut -d'"' -f4)
+   SHA=$(echo "$INFO" | grep -oE '"sha256hash":"[^"]*"' | cut -d'"' -f4)
+   echo "Servidor: $URL"
+
+   # 3) Comprobar que es la misma versión que tu editor
+   case "$URL" in *"/$C/"*) echo "OK: coinciden";; *) echo "NO COINCIDEN: actualiza Devin Desktop y vuelve a empezar";; esac
+   ```
+
+   Si dice **`OK: coinciden`**, sigue. Si dice **`NO COINCIDEN`**, actualiza Devin Desktop (o reinstálalo) y repite este paso.
+
+4. En la **misma** terminal, pega esto (tarda un par de minutos, son unos 200 MB):
+
+   ```bash
+   cd ~/.devin-server/bin/$C && rm -f vscode-server.tar.gz
+   curl -fL -o vscode-server.tar.gz "$URL"
+   echo "$SHA  vscode-server.tar.gz" | sha256sum -c - && tar -xzf vscode-server.tar.gz --strip-components 1 && ls -la bin/devin-server
+   cd ~
+   ```
+
+   Tiene que salir `vscode-server.tar.gz: OK` y una línea con `bin/devin-server`. El `OK` significa que el archivo se descargó completo y sin modificar.
+
+5. Abre Devin Desktop y conéctate a WSL (Paso 5) o pulsa **Retry**.
+
+> **Ojo:** esto hay que repetirlo **cada vez que Devin Desktop se actualice** mientras no corrijan el `product.json`. Son solo los pasos 3 y 4 otra vez.
+
+> **¿Y si cambio la dirección en la configuración?** La extensión tiene un ajuste `remote.WSL.serverDownloadUrlTemplate`, pero no sirve aquí: el nombre del archivo de Devin usa un número de versión distinto (por ejemplo `3.11.234`) del que la extensión conoce (`1.126.0`), así que tendrías que escribir la dirección completa a mano y cambiarla en cada actualización. La instalación manual es igual de rápida y más segura porque comprueba el checksum.
+
+---
+
 ## Resumen rápido (chuleta)
 
 | Problema | Qué hacer |
@@ -155,6 +232,7 @@ wsl -d Ubuntu -- bash -lc "ls ~/.devin-server/bin/ ; ps -eo pid,cmd | grep devin
 | WSL viejo | `wsl --update` |
 | WSL sin internet (VPN) | Crea `.wslconfig` con `networkingMode=mirrored` + `wsl --shutdown` |
 | Instalación a medias | `wsl -d Ubuntu -- bash -c "rm -rf ~/.devin-server ~/.windsurf-server"` |
+| Falla justo después de actualizar Devin Desktop (`vscode-server.tar.gz` de 0 bytes) | Instala el servidor a mano (**Paso 7**) |
 | Comprobar que funciona | `ls ~/.devin-server/bin/` dentro de WSL |
 
 ---
@@ -166,6 +244,19 @@ wsl -d Ubuntu -- bash -lc "ls ~/.devin-server/bin/ ; ps -eo pid,cmd | grep devin
 - La prueba de internet desde WSL respondió bien (`404` del servidor de descargas de Devin, `301` de Google) → **la red no era el problema**.
 - Dentro de `~/.devin-server` ya estaba el servidor instalado y los procesos corriendo → un intento posterior había funcionado.
 - Conclusión: **fue un fallo puntual** y con reintentar se arregló. Si hubiera seguido, el siguiente paso era el **Paso 4** (borrar e instalar limpio).
+
+---
+
+## Lo que pasó en mi caso, segunda parte (después de una actualización)
+
+Unos días después Devin Desktop se actualizó a la versión **1.126.0** y al abrirlo volvió el error. Esto es lo que hice, en orden:
+
+1. Miré qué había en `~/.devin-server`: solo una carpeta nueva `bin/92c83011.../` con un `vscode-server.tar.gz` de **0 bytes**. La descarga había fallado.
+2. Probé la red desde WSL: respondía bien, así que no era internet.
+3. Busqué el `product.json` de Devin Desktop (en mi caso estaba instalado en `C:\devindesktop`) y vi que **no tenía** `serverDownloadUrlTemplate`.
+4. Busqué la dirección dentro de la extensión de WSL (`jeanp413.open-remote-wsl`) y salió la de **VSCodium**: por eso daba 404.
+5. Le pregunté al servidor de actualizaciones de Devin (`https://windsurf-stable.codeium.com/api/update/linux-reh-x64/stable/latest`) y me dio la dirección correcta del servidor 1.126.0 y su checksum.
+6. Lo descargué a mano en `~/.devin-server/bin/92c83011.../`, comprobé el checksum, lo descomprimí y volví a conectar (**Paso 7**).
 
 ---
 
